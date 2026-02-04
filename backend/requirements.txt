@@ -1,7 +1,7 @@
 Flask==3.0.0
 Flask-CORS==4.0.0
 PyPDF2==3.0.1
-Pillow-SIMD==9.0.0.post1
+Pillow==10.0.0
 reportlab==4.0.7
 openpyxl==3.1.2
 python-dotenv==1.0.0
