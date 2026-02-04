@@ -54,9 +54,13 @@ def add_security_headers(response):
 ALLOWED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
-    'http://localhost:5500',  # VS Code Live Server
-    os.environ.get('FRONTEND_URL', 'https://pdfverse.netlify.app'),  # Your Netlify domain
+    'http://localhost:5500',
+    'https://pdfverses.netlify.app',  # Your actual Netlify URL
 ]
+
+# Add FRONTEND_URL from environment if exists
+if os.environ.get('FRONTEND_URL'):
+    ALLOWED_ORIGINS.append(os.environ.get('FRONTEND_URL'))
 
 CORS(app, origins=ALLOWED_ORIGINS, 
      supports_credentials=True,
