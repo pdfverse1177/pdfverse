@@ -29,7 +29,6 @@ from PIL import Image
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
-import pandas as pd
 from openpyxl import load_workbook
 
 # Initialize Flask App
