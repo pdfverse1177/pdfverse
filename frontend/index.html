@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="PDFverse - Free PDF tools online">
+    <title>PDFverse - Free PDF Tools</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="config.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        :root{--bg:#09090b;--bg2:#18181b;--text:#fafafa;--text2:#a1a1aa;--accent:#8b5cf6;--border:rgba(255,255,255,0.08);--success:#22c55e;--error:#ef4444}
+        body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+        .glow{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 0%,rgba(139,92,246,0.15),transparent 70%);pointer-events:none}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .fade{animation:fadeIn .4s ease-out}
+        .spinner{width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+        button{font-family:inherit}
+    </style>
+</head>
+<body>
+<div class="glow"></div>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,createContext,useContext}=React;
+const API=window.PDFVERSE_CONFIG?.API_URL||'http://localhost:5000/api';
+
+const AuthCtx=createContext(),NotifyCtx=createContext();
+
+const useAuth=()=>{
+    const[user,setUser]=useState(null),[token,setToken]=useState(localStorage.getItem('token'));
+    useEffect(()=>{
+        if(token)fetch(`${API}/auth/me`,{headers:{Authorization:`Bearer ${token}`}})
+            .then(r=>r.ok?r.json():Promise.reject()).then(d=>setUser(d.user))
+            .catch(()=>{localStorage.removeItem('token');setToken(null)});
+    },[token]);
+    const login=async(e,p)=>{const r=await fetch(`${API}/auth/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:e,password:p})});const d=await r.json();if(r.ok){localStorage.setItem('token',d.token);setToken(d.token);setUser(d.user);return{ok:1}}return{ok:0,err:d.error}};
+    const register=async(e,p)=>{const r=await fetch(`${API}/auth/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:e,password:p})});const d=await r.json();if(r.ok){localStorage.setItem('token',d.token);setToken(d.token);setUser(d.user);return{ok:1}}return{ok:0,err:d.error}};
+    const logout=()=>{localStorage.removeItem('token');setToken(null);setUser(null)};
+    return{user,token,login,register,logout};
+};
+
+const useNotify=()=>{const[items,setItems]=useState([]);const notify=(m,t='info')=>{const id=Date.now();setItems(p=>[...p,{id,m,t}]);setTimeout(()=>setItems(p=>p.filter(n=>n.id!==id)),4e3)};return{items,notify}};
+
+const Toasts=()=>{const{items}=useContext(NotifyCtx);const c={success:'#22c55e',error:'#ef4444',info:'#8b5cf6',warning:'#eab308'};
+return<div style={{position:'fixed',top:16,right:16,zIndex:1e3}}>{items.map(n=><div key={n.id} className="fade" style={{background:`${c[n.t]}15`,border:`1px solid ${c[n.t]}40`,borderRadius:8,padding:'12px 18px',marginBottom:8,backdropFilter:'blur(12px)'}}>{n.m}</div>)}</div>};
+
+const Btn=({children,v='primary',loading,disabled,onClick,style={}})=>{
+    const s={primary:{background:'linear-gradient(135deg,#8b5cf6,#6366f1)',color:'#fff'},secondary:{background:'var(--bg2)',color:'var(--text)',border:'1px solid var(--border)'},ghost:{background:'transparent',color:'var(--text2)'}};
+    return<button onClick={onClick} disabled={disabled||loading} style={{display:'inline-flex',alignItems:'center',justifyContent:'center',gap:8,padding:'10px 20px',borderRadius:8,border:'none',fontWeight:500,fontSize:14,cursor:disabled||loading?'not-allowed':'pointer',opacity:disabled||loading?.5:1,transition:'all .2s',...s[v],...style}}>{loading?<div className="spinner"/>:children}</button>
+};
+
+const Input=({label,error,style={},...p})=><div style={{display:'flex',flexDirection:'column',gap:6,...style}}>{label&&<label style={{fontSize:13,color:'var(--text2)'}}>{label}</label>}<input style={{padding:'10px 14px',background:'var(--bg2)',border:`1px solid ${error?'var(--error)':'var(--border)'}`,borderRadius:8,color:'var(--text)',fontSize:14,outline:'none'}} {...p}/>{error&&<span style={{fontSize:12,color:'var(--error)'}}>{error}</span>}</div>;
+
+const Card=({children,hover,onClick})=>{const[h,setH]=useState(0);return<div onMouseEnter={()=>setH(1)} onMouseLeave={()=>setH(0)} onClick={onClick} style={{background:'#131316',border:'1px solid var(--border)',borderRadius:12,padding:20,cursor:hover?'pointer':'default',transition:'all .2s',transform:hover&&h?'translateY(-2px)':'none',boxShadow:hover&&h?'0 8px 24px rgba(139,92,246,.1)':'none',borderColor:hover&&h?'rgba(139,92,246,.3)':'var(--border)'}}>{children}</div>};
+
+const Modal=({open,onClose,title,children})=>{if(!open)return null;return<div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.7)',backdropFilter:'blur(6px)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:100,padding:20}}><div onClick={e=>e.stopPropagation()} className="fade" style={{background:'#0f0f12',borderRadius:16,border:'1px solid var(--border)',width:'100%',maxWidth:440,maxHeight:'90vh',overflow:'auto'}}><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 20px',borderBottom:'1px solid var(--border)'}}><h3 style={{fontSize:16,fontWeight:600}}>{title}</h3><button onClick={onClose} style={{background:'none',border:'none',color:'var(--text2)',cursor:'pointer',fontSize:20}}>×</button></div><div style={{padding:20}}>{children}</div></div></div>};
+
+const Drop=({accept,multi,onFiles,children})=>{const[d,setD]=useState(0);const ref=useRef();return<div onDragOver={e=>{e.preventDefault();setD(1)}} onDragLeave={()=>setD(0)} onDrop={e=>{e.preventDefault();setD(0);onFiles([...e.dataTransfer.files])}} onClick={()=>ref.current?.click()} style={{border:`2px dashed ${d?'var(--accent)':'var(--border)'}`,borderRadius:12,padding:36,textAlign:'center',cursor:'pointer',background:d?'rgba(139,92,246,.05)':'transparent'}}><input ref={ref} type="file" accept={accept} multiple={multi} onChange={e=>onFiles([...e.target.files])} style={{display:'none'}}/>{children}</div>};
+
+const Header=({onAuth})=>{const{user,logout}=useContext(AuthCtx);const[m,setM]=useState(0);
+return<header style={{position:'sticky',top:0,background:'rgba(9,9,11,.85)',backdropFilter:'blur(16px)',borderBottom:'1px solid var(--border)',zIndex:50}}><div style={{maxWidth:1200,margin:'0 auto',padding:'12px 20px',display:'flex',justifyContent:'space-between',alignItems:'center'}}><div style={{display:'flex',alignItems:'center',gap:8}}><div style={{width:32,height:32,background:'linear-gradient(135deg,#8b5cf6,#6366f1)',borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center'}}>📄</div><span style={{fontSize:18,fontWeight:700}}>PDF<span style={{color:'var(--accent)'}}>verse</span></span></div><nav style={{display:'flex',gap:10}}>{user?<div style={{position:'relative'}}><Btn v="secondary" onClick={()=>setM(!m)}>👤 {user.email.split('@')[0]} ▼</Btn>{m&&<div style={{position:'absolute',top:'100%',right:0,marginTop:6,background:'#0f0f12',border:'1px solid var(--border)',borderRadius:8}}><button onClick={()=>{logout();setM(0)}} style={{width:'100%',padding:'10px 16px',background:'none',border:'none',color:'var(--error)',textAlign:'left',cursor:'pointer'}}>🚪 Logout</button></div>}</div>:<><Btn v="ghost" onClick={()=>onAuth('login')}>Sign In</Btn><Btn onClick={()=>onAuth('register')}>Get Started</Btn></>}</nav></div></header>};
+
+const AuthModal=({open,mode,onClose,onMode})=>{const{login,register}=useContext(AuthCtx);const{notify}=useContext(NotifyCtx);const[e,setE]=useState('');const[p,setP]=useState('');const[p2,setP2]=useState('');const[l,setL]=useState(0);
+const go=async ev=>{ev.preventDefault();if(mode==='register'&&p!==p2){notify('Passwords mismatch','error');return}setL(1);const r=mode==='login'?await login(e,p):await register(e,p);setL(0);if(r.ok){notify(mode==='login'?'Welcome!':'Created!','success');onClose()}else notify(r.err,'error')};
+return<Modal open={open} onClose={onClose} title={mode==='login'?'Sign In':'Create Account'}><form onSubmit={go} style={{display:'flex',flexDirection:'column',gap:16}}><Input label="Email" type="email" value={e} onChange={ev=>setE(ev.target.value)} placeholder="you@example.com"/><Input label="Password" type="password" value={p} onChange={ev=>setP(ev.target.value)} placeholder="••••••••"/>{mode==='register'&&<Input label="Confirm" type="password" value={p2} onChange={ev=>setP2(ev.target.value)} placeholder="••••••••"/>}<Btn type="submit" loading={l} style={{width:'100%'}}>{mode==='login'?'Sign In':'Create Account'}</Btn><p style={{textAlign:'center',fontSize:13,color:'var(--text2)'}}>{mode==='login'?"No account? ":"Have account? "}<button type="button" onClick={()=>onMode(mode==='login'?'register':'login')} style={{background:'none',border:'none',color:'var(--accent)',cursor:'pointer'}}>{mode==='login'?'Sign up':'Sign in'}</button></p></form></Modal>};
+
+const ToolCard=({tool,onClick})=>{const c={'Images to PDF':'#ec4899','Merge PDFs':'#8b5cf6','Split PDF':'#6366f1','Compress PDF':'#14b8a6','Unlock PDF':'#f59e0b','Protect PDF':'#22c55e','Excel to PDF':'#3b82f6','Rotate PDF':'#f97316','Watermark':'#a855f7','Extract Pages':'#06b6d4'};
+return<Card hover onClick={onClick}><div style={{display:'flex',flexDirection:'column',gap:12}}><div style={{width:44,height:44,background:`${c[tool.name]||'#8b5cf6'}18`,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}}>{tool.icon}</div><div><h3 style={{fontSize:15,marginBottom:4,fontWeight:600}}>{tool.name}</h3><p style={{fontSize:13,color:'var(--text2)'}}>{tool.desc}</p></div></div></Card>};
+
+const ToolModal=({tool,open,onClose})=>{const{token}=useContext(AuthCtx);const{notify}=useContext(NotifyCtx);const[files,setFiles]=useState([]);const[l,setL]=useState(0);const[res,setRes]=useState(null);const[params,setParams]=useState({});
+const go=async()=>{if(!files.length){notify('Select files','warning');return}setL(1);setRes(null);try{const fd=new FormData();if(tool.multi)files.forEach(f=>fd.append('files',f));else fd.append('file',files[0]);Object.entries(params).forEach(([k,v])=>fd.append(k,v));const h=token?{Authorization:`Bearer ${token}`}:{};const r=await fetch(`${API}/convert/${tool.ep}`,{method:'POST',headers:h,body:fd});const d=await r.json();if(r.ok){setRes(d);notify(d.message||'Done!','success')}else notify(d.error||'Error','error')}catch{notify('Failed','error')}setL(0)};
+const dl=async f=>{const h=token?{Authorization:`Bearer ${token}`}:{};const r=await fetch(`${API}/files/${f.file_id}`,{headers:h});const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=f.filename;a.click()};
+const extra=()=>{if(!tool)return null;if(tool.id==='rotate')return<div style={{marginTop:14}}><label style={{fontSize:13,color:'var(--text2)',display:'block',marginBottom:6}}>Angle</label><select value={params.angle||'90'} onChange={e=>setParams({...params,angle:e.target.value})} style={{width:'100%',padding:10,background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:8,color:'var(--text)'}}><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option></select></div>;if(tool.id==='unlock')return<Input label="Password" type="password" value={params.password||''} onChange={e=>setParams({...params,password:e.target.value})} style={{marginTop:14}}/>;if(tool.id==='protect')return<Input label="Set Password" type="password" value={params.user_password||''} onChange={e=>setParams({...params,user_password:e.target.value})} style={{marginTop:14}}/>;if(tool.id==='watermark')return<Input label="Text" value={params.text||''} onChange={e=>setParams({...params,text:e.target.value})} placeholder="CONFIDENTIAL" style={{marginTop:14}}/>;if(tool.id==='extract')return<Input label="Pages" value={params.pages||''} onChange={e=>setParams({...params,pages:e.target.value})} placeholder="1,3,5-7" style={{marginTop:14}}/>;return null};
+const close=()=>{onClose();setFiles([]);setRes(null);setParams({})};
+return<Modal open={open} onClose={close} title={tool?.name}>{tool&&<><p style={{color:'var(--text2)',marginBottom:18,fontSize:14}}>{tool.desc}</p><Drop accept={tool.accept} multi={tool.multi} onFiles={setFiles}><div style={{fontSize:32}}>📁</div><p style={{color:'var(--text2)',marginTop:10}}>Drop files or click</p></Drop>{files.length>0&&<div style={{marginTop:14}}>{files.map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',background:'var(--bg2)',borderRadius:6,marginBottom:4}}><span style={{flex:1,fontSize:13}}>{f.name}</span><span style={{fontSize:11,color:'var(--text2)'}}>{(f.size/1024).toFixed(1)}KB</span><button onClick={()=>setFiles(files.filter((_,j)=>j!==i))} style={{background:'none',border:'none',color:'var(--error)',cursor:'pointer'}}>×</button></div>)}</div>}{extra()}<Btn onClick={go} loading={l} disabled={!files.length} style={{width:'100%',marginTop:18}}>⚡ Process</Btn>{res&&<div style={{marginTop:18,padding:16,background:'rgba(34,197,94,.08)',border:'1px solid rgba(34,197,94,.2)',borderRadius:8}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12,color:'var(--success)'}}>✓ {res.message}</div>{res.file&&<Btn v="secondary" onClick={()=>dl(res.file)} style={{width:'100%'}}>⬇️ Download</Btn>}{res.files?.map((f,i)=><Btn key={i} v="secondary" onClick={()=>dl(f)} style={{width:'100%',marginTop:6}}>⬇️ {f.filename}</Btn>)}<p style={{fontSize:11,color:'var(--text2)',textAlign:'center',marginTop:10}}>Available 24h</p></div>}</>}</Modal>};
+
+const Hero=()=><section style={{padding:'60px 20px',textAlign:'center',maxWidth:800,margin:'0 auto'}} className="fade"><div style={{display:'inline-flex',alignItems:'center',gap:6,padding:'6px 12px',background:'rgba(139,92,246,.1)',border:'1px solid rgba(139,92,246,.2)',borderRadius:20,marginBottom:18,fontSize:13,color:'var(--accent)'}}>✨ 100% Free</div><h1 style={{fontSize:'clamp(28px,5vw,48px)',fontWeight:700,lineHeight:1.1,marginBottom:16}}>All-in-One <span style={{background:'linear-gradient(135deg,#8b5cf6,#6366f1,#3b82f6)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>PDF Tools</span></h1><p style={{fontSize:16,color:'var(--text2)',maxWidth:500,margin:'0 auto 28px'}}>Convert, merge, compress, protect your documents free.</p><div style={{display:'flex',gap:24,justifyContent:'center',flexWrap:'wrap'}}>{['🔒 Secure','⚡ Instant','🕐 24h Storage'].map(t=><span key={t} style={{color:'var(--text2)',fontSize:14}}>{t}</span>)}</div></section>;
+
+const Tools=({onSelect})=>{const tools=[{id:'images-to-pdf',name:'Images to PDF',icon:'🖼️',desc:'Convert images to PDF',ep:'images-to-pdf',accept:'image/*',multi:1},{id:'merge',name:'Merge PDFs',icon:'📑',desc:'Combine multiple PDFs',ep:'merge-pdfs',accept:'.pdf',multi:1},{id:'split',name:'Split PDF',icon:'✂️',desc:'Extract pages',ep:'split-pdf',accept:'.pdf'},{id:'compress',name:'Compress PDF',icon:'📦',desc:'Reduce file size',ep:'compress-pdf',accept:'.pdf'},{id:'unlock',name:'Unlock PDF',icon:'🔓',desc:'Remove password',ep:'unlock-pdf',accept:'.pdf'},{id:'protect',name:'Protect PDF',icon:'🔐',desc:'Add password',ep:'protect-pdf',accept:'.pdf'},{id:'excel-to-pdf',name:'Excel to PDF',icon:'📊',desc:'Convert Excel/CSV',ep:'excel-to-pdf',accept:'.xlsx,.xls,.csv'},{id:'rotate',name:'Rotate PDF',icon:'🔄',desc:'Rotate pages',ep:'rotate-pdf',accept:'.pdf'},{id:'watermark',name:'Watermark',icon:'💧',desc:'Add text watermark',ep:'add-watermark',accept:'.pdf'},{id:'extract',name:'Extract Pages',icon:'📄',desc:'Extract specific pages',ep:'extract-pages',accept:'.pdf'}];
+return<section style={{padding:'20px 20px 80px',maxWidth:1100,margin:'0 auto'}}><div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:16}}>{tools.map((t,i)=><div key={t.id} className="fade" style={{animationDelay:`${i*.04}s`}}><ToolCard tool={t} onClick={()=>onSelect(t)}/></div>)}</div></section>};
+
+const Footer=()=><footer style={{borderTop:'1px solid var(--border)',padding:'30px 20px',textAlign:'center'}}><p style={{color:'var(--text2)',fontSize:13}}>© 2024 PDFverse • Files auto-delete after 24 hours</p></footer>;
+
+const App=()=>{const auth=useAuth();const{items,notify}=useNotify();const[authM,setAuthM]=useState({open:0,mode:'login'});const[tool,setTool]=useState(null);
+return<AuthCtx.Provider value={auth}><NotifyCtx.Provider value={{items,notify}}><Toasts/><Header onAuth={m=>setAuthM({open:1,mode:m})}/><main><Hero/><Tools onSelect={setTool}/></main><Footer/><AuthModal open={authM.open} mode={authM.mode} onClose={()=>setAuthM({...authM,open:0})} onMode={m=>setAuthM({...authM,mode:m})}/><ToolModal tool={tool} open={!!tool} onClose={()=>setTool(null)}/></NotifyCtx.Provider></AuthCtx.Provider>};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
