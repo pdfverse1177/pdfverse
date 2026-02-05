@@ -1,5 +1,5 @@
 # PDFverse Backend with Cloudinary Storage
-# All free and open-source
+# Compatible with Python 3.13
 
 # Web Framework
 Flask==3.0.0
@@ -11,19 +11,19 @@ PyJWT==2.8.0
 Werkzeug==3.0.1
 
 # PDF Processing
-pypdf==4.0.0
-reportlab==4.1.0
-pdfplumber==0.11.0
+pypdf>=4.0.0
+reportlab>=4.1.0
+pdfplumber>=0.11.0
 
-# Image Processing (Updated for Python 3.13 compatibility)
-Pillow>=10.2.0
+# Image Processing
+Pillow>=10.4.0
 
-# Excel/CSV Processing
-pandas==2.2.0
-openpyxl==3.1.2
+# Excel/CSV Processing (Updated for Python 3.13)
+pandas>=2.2.3
+openpyxl>=3.1.2
 
 # Cloud Storage (FREE - 25GB storage!)
-cloudinary==1.38.0
+cloudinary>=1.38.0
 
 # Production server
 gunicorn==21.2.0
