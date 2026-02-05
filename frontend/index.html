@@ -29,6 +29,12 @@
 const {useState,useEffect,useRef,createContext,useContext}=React;
 const API=window.PDFVERSE_CONFIG?.API_URL||'http://localhost:5000/api';
 
+// === MAINTENANCE MODE CONFIGURATION ===
+// Set to true to show the maintenance page, false to show normal site
+const MAINTENANCE_MODE = true;
+const MAINTENANCE_MESSAGE = "We're currently performing scheduled maintenance to improve your experience. Please check back soon!";
+// ======================================
+
 const AuthCtx=createContext(),NotifyCtx=createContext();
 
 const useAuth=()=>{
@@ -85,7 +91,11 @@ return<section style={{padding:'20px 20px 80px',maxWidth:1100,margin:'0 auto'}}>
 
 const Footer=()=><footer style={{borderTop:'1px solid var(--border)',padding:'30px 20px',textAlign:'center'}}><p style={{color:'var(--text2)',fontSize:13}}>© 2024 PDFverse • Files auto-delete after 24 hours</p></footer>;
 
-const App=()=>{const auth=useAuth();const{items,notify}=useNotify();const[authM,setAuthM]=useState({open:0,mode:'login'});const[tool,setTool]=useState(null);
+const MaintenancePage=()=><div style={{position:'fixed',inset:0,background:'var(--bg)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000}}><div className="glow" style={{position:'absolute',inset:0}}/><div className="fade" style={{textAlign:'center',padding:40,maxWidth:500,position:'relative',zIndex:1}}><div style={{width:80,height:80,background:'linear-gradient(135deg,#8b5cf6,#6366f1)',borderRadius:16,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 24px',fontSize:36}}>🔧</div><h1 style={{fontSize:32,fontWeight:700,marginBottom:12}}>Under <span style={{background:'linear-gradient(135deg,#8b5cf6,#6366f1,#3b82f6)',WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>Maintenance</span></h1><p style={{color:'var(--text2)',fontSize:16,lineHeight:1.6,marginBottom:28}}>{MAINTENANCE_MESSAGE}</p><div style={{display:'flex',gap:16,justifyContent:'center',flexWrap:'wrap',marginBottom:24}}><div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',background:'rgba(139,92,246,.1)',border:'1px solid rgba(139,92,246,.2)',borderRadius:8}}><div className="spinner"/><span style={{color:'var(--text2)',fontSize:14}}>Working on it...</span></div></div><p style={{color:'var(--text2)',fontSize:13}}>© 2024 PDFverse</p></div></div>;
+
+const App=()=>{
+if(MAINTENANCE_MODE)return<MaintenancePage/>;
+const auth=useAuth();const{items,notify}=useNotify();const[authM,setAuthM]=useState({open:0,mode:'login'});const[tool,setTool]=useState(null);
 return<AuthCtx.Provider value={auth}><NotifyCtx.Provider value={{items,notify}}><Toasts/><Header onAuth={m=>setAuthM({open:1,mode:m})}/><main><Hero/><Tools onSelect={setTool}/></main><Footer/><AuthModal open={authM.open} mode={authM.mode} onClose={()=>setAuthM({...authM,open:0})} onMode={m=>setAuthM({...authM,mode:m})}/><ToolModal tool={tool} open={!!tool} onClose={()=>setTool(null)}/></NotifyCtx.Provider></AuthCtx.Provider>};
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
