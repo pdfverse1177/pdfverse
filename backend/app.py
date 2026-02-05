@@ -258,7 +258,7 @@ def upload_to_cloudinary(file_data, filename):
         file_id = str(uuid.uuid4())
         public_id = f"pdfverse/{file_id}"
         
-        # Determine resource type based on file extension
+        # For PDFs, always use 'raw' resource type
         ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
         
         if ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']:
@@ -267,18 +267,11 @@ def upload_to_cloudinary(file_data, filename):
             resource_type = 'raw'  # For PDFs, docs, etc.
         
         # Upload to Cloudinary
-        if isinstance(file_data, bytes):
-            result = cloudinary.uploader.upload(
-                file_data,
-                public_id=public_id,
-                resource_type=resource_type
-            )
-        else:
-            result = cloudinary.uploader.upload(
-                file_data,
-                public_id=public_id,
-                resource_type=resource_type
-            )
+        result = cloudinary.uploader.upload(
+            file_data,
+            public_id=public_id,
+            resource_type=resource_type
+        )
         
         return {
             'success': True,
@@ -315,10 +308,10 @@ def save_file(file_data, original_filename, user_id=None):
     ext = safe_filename.rsplit('.', 1)[1].lower() if '.' in safe_filename else 'bin'
     stored_filename = f"{file_id}.{ext}"
     
-    # Determine file size
+    # Ensure we have bytes
     if isinstance(file_data, bytes):
-        file_size = len(file_data)
         file_bytes = file_data
+        file_size = len(file_data)
     else:
         file_data.seek(0, 2)  # Seek to end
         file_size = file_data.tell()
@@ -349,7 +342,7 @@ def save_file(file_data, original_filename, user_id=None):
             file_size = upload_result.get('size', file_size)
             print(f"✅ Uploaded to Cloudinary: {safe_filename}")
         else:
-            print(f"⚠️ Cloudinary failed, using local storage")
+            print(f"⚠️ Cloudinary failed: {upload_result.get('error')}, using local storage")
     
     # Fallback to local storage if Cloudinary not available
     if storage_type == 'local':
@@ -386,18 +379,11 @@ def get_file_path(file_id, user_id=None):
     """Get file path or cloud URL"""
     db = get_db()
     
-    # For guests, allow access to any non-expired file
-    # For logged-in users, only their own files
-    if user_id:
-        file_info = db.execute(
-            'SELECT * FROM files WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
-            (file_id, user_id)
-        ).fetchone()
-    else:
-        file_info = db.execute(
-            'SELECT * FROM files WHERE id = ?',
-            (file_id,)
-        ).fetchone()
+    # Allow access to any non-expired file
+    file_info = db.execute(
+        'SELECT * FROM files WHERE id = ?',
+        (file_id,)
+    ).fetchone()
     
     if not file_info:
         return None, None
@@ -590,7 +576,7 @@ def download_file(file_id):
     db.execute('UPDATE files SET download_count = download_count + 1 WHERE id = ?', (file_id,))
     db.commit()
     
-    # If it's a Cloudinary URL, redirect to it (browser will download automatically)
+    # If it's a Cloudinary URL, redirect to it
     if file_info.get('storage_type') == 'cloudinary':
         return redirect(file_path_or_url)
     
@@ -634,6 +620,7 @@ def delete_file(file_id):
     return jsonify({'message': 'File deleted successfully'})
 
 # ================== CONVERSION ROUTES ==================
+# ✅ FIXED: All routes now return JSON with file info (compatible with frontend)
 
 @app.route('/api/convert/images-to-pdf', methods=['POST'])
 @limiter.limit("30 per hour")
@@ -653,10 +640,7 @@ def images_to_pdf():
             return jsonify({'error': f'Invalid file type: {file.filename}'}), 400
     
     try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.utils import ImageReader
-        
+        # Create PDF using reportlab
         pdf_buffer = io.BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=A4)
         width, height = A4
@@ -670,7 +654,6 @@ def images_to_pdf():
             
             # Convert RGBA/palette to RGB
             if img.mode in ('RGBA', 'LA', 'P'):
-                # Create white background
                 background = Image.new('RGB', img.size, (255, 255, 255))
                 if img.mode == 'P':
                     img = img.convert('RGBA')
@@ -691,21 +674,17 @@ def images_to_pdf():
             img_width, img_height = img.size
             aspect_ratio = img_height / float(img_width)
             
-            # Calculate display size (with margins)
             margin = 40
             max_width = width - (2 * margin)
             max_height = height - (2 * margin)
             
             if aspect_ratio > (max_height / max_width):
-                # Height is limiting
                 display_height = max_height
                 display_width = display_height / aspect_ratio
             else:
-                # Width is limiting
                 display_width = max_width
                 display_height = display_width * aspect_ratio
             
-            # Center on page
             x = (width - display_width) / 2
             y = (height - display_height) / 2
             
@@ -716,40 +695,38 @@ def images_to_pdf():
                        height=display_height,
                        preserveAspectRatio=True)
             
-            # New page for next image
             c.showPage()
         
-        # Finalize PDF
         c.save()
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # Validate PDF was created properly
+        # Validate PDF
         if len(pdf_data) < 100:
             raise Exception("Generated PDF is too small - likely corrupted")
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
+        # Save file and return JSON
         user_id = g.current_user['user_id'] if g.current_user else None
+        file_info = save_file(pdf_data, 'converted_images.pdf', user_id)
+        
+        message = 'PDF created successfully'
         if user_id:
-            save_file(pdf_data, 'converted_images.pdf', user_id)
+            message += ' (saved permanently!)'
+        else:
+            message += ' (available for 24 hours)'
         
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name='converted_images.pdf'
-        )
+        return jsonify({
+            'message': message,
+            'file': file_info
+        })
     
     except Exception as e:
         print(f"❌ Images to PDF error: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Conversion failed: {str(e)}'}), 500
-        
+
+
 @app.route('/api/convert/merge-pdfs', methods=['POST'])
 @limiter.limit("30 per hour")
 @optional_auth
@@ -780,24 +757,17 @@ def merge_pdfs():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
-        if user_id:
-            save_file(pdf_data, 'merged.pdf', user_id)
+        file_info = save_file(pdf_data, 'merged.pdf', user_id)
         
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name='merged.pdf'
-        )
+        return jsonify({
+            'message': 'PDFs merged successfully',
+            'file': file_info
+        })
     
     except Exception as e:
         return jsonify({'error': f'Merge failed: {str(e)}'}), 500
+
 
 @app.route('/api/convert/split-pdf', methods=['POST'])
 @limiter.limit("30 per hour")
@@ -816,8 +786,6 @@ def split_pdf():
         reader = PdfReader(file.stream)
         user_id = g.current_user['user_id'] if g.current_user else None
         
-        # ✅ FIXED: For split PDF, we need to return multiple files
-        # Save all files and return their info as JSON (this one stays as JSON)
         files_info = []
         for i, page in enumerate(reader.pages):
             writer = PdfWriter()
@@ -838,6 +806,7 @@ def split_pdf():
     
     except Exception as e:
         return jsonify({'error': f'Split failed: {str(e)}'}), 500
+
 
 @app.route('/api/convert/compress-pdf', methods=['POST'])
 @limiter.limit("30 per hour")
@@ -867,27 +836,19 @@ def compress_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         compressed_name = f'compressed_{original_name}'
+        file_info = save_file(pdf_data, compressed_name, user_id)
         
-        if user_id:
-            save_file(pdf_data, compressed_name, user_id)
-        
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=compressed_name
-        )
+        return jsonify({
+            'message': 'PDF compressed successfully',
+            'file': file_info
+        })
     
     except Exception as e:
         return jsonify({'error': f'Compression failed: {str(e)}'}), 500
+
 
 @app.route('/api/convert/rotate-pdf', methods=['POST'])
 @limiter.limit("30 per hour")
@@ -929,27 +890,19 @@ def rotate_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         rotated_name = f'rotated_{original_name}'
+        file_info = save_file(pdf_data, rotated_name, user_id)
         
-        if user_id:
-            save_file(pdf_data, rotated_name, user_id)
-        
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=rotated_name
-        )
+        return jsonify({
+            'message': 'PDF rotated successfully',
+            'file': file_info
+        })
     
     except Exception as e:
         return jsonify({'error': f'Rotation failed: {str(e)}'}), 500
+
 
 @app.route('/api/convert/unlock-pdf', methods=['POST'])
 @limiter.limit("20 per hour")
@@ -981,27 +934,19 @@ def unlock_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         unlocked_name = f'unlocked_{original_name}'
+        file_info = save_file(pdf_data, unlocked_name, user_id)
         
-        if user_id:
-            save_file(pdf_data, unlocked_name, user_id)
-        
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=unlocked_name
-        )
+        return jsonify({
+            'message': 'PDF unlocked successfully',
+            'file': file_info
+        })
     
     except Exception as e:
         return jsonify({'error': f'Unlock failed: {str(e)}'}), 500
+
 
 @app.route('/api/convert/protect-pdf', methods=['POST'])
 @limiter.limit("20 per hour")
@@ -1035,27 +980,19 @@ def protect_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         protected_name = f'protected_{original_name}'
+        file_info = save_file(pdf_data, protected_name, user_id)
         
-        if user_id:
-            save_file(pdf_data, protected_name, user_id)
-        
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=protected_name
-        )
+        return jsonify({
+            'message': 'PDF protected successfully',
+            'file': file_info
+        })
     
     except Exception as e:
         return jsonify({'error': f'Protection failed: {str(e)}'}), 500
+
 
 @app.route('/api/convert/excel-to-pdf', methods=['POST'])
 @limiter.limit("30 per hour")
@@ -1111,27 +1048,19 @@ def excel_to_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         pdf_name = original_name.rsplit('.', 1)[0] + '.pdf'
+        file_info = save_file(pdf_data, pdf_name, user_id)
         
-        if user_id:
-            save_file(pdf_data, pdf_name, user_id)
-        
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=pdf_name
-        )
+        return jsonify({
+            'message': 'Excel converted to PDF successfully',
+            'file': file_info
+        })
     
     except Exception as e:
         return jsonify({'error': f'Conversion failed: {str(e)}'}), 500
+
 
 @app.route('/api/convert/add-watermark', methods=['POST'])
 @limiter.limit("30 per hour")
@@ -1177,27 +1106,19 @@ def add_watermark():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         watermarked_name = f'watermarked_{original_name}'
+        file_info = save_file(pdf_data, watermarked_name, user_id)
         
-        if user_id:
-            save_file(pdf_data, watermarked_name, user_id)
-        
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=watermarked_name
-        )
+        return jsonify({
+            'message': 'Watermark added successfully',
+            'file': file_info
+        })
     
     except Exception as e:
         return jsonify({'error': f'Watermark failed: {str(e)}'}), 500
+
 
 @app.route('/api/convert/extract-pages', methods=['POST'])
 @limiter.limit("30 per hour")
@@ -1245,27 +1166,19 @@ def extract_pages():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         extracted_name = f'extracted_{original_name}'
+        file_info = save_file(pdf_data, extracted_name, user_id)
         
-        if user_id:
-            save_file(pdf_data, extracted_name, user_id)
-        
-        # ✅ FIXED: Return the PDF file directly!
-        pdf_buffer = io.BytesIO(pdf_data)
-        pdf_buffer.seek(0)
-        
-        return send_file(
-            pdf_buffer,
-            mimetype='application/pdf',
-            as_attachment=True,
-            download_name=extracted_name
-        )
+        return jsonify({
+            'message': f'Extracted {len(pages_to_extract)} pages successfully',
+            'file': file_info
+        })
     
     except Exception as e:
         return jsonify({'error': f'Extraction failed: {str(e)}'}), 500
+
 
 @app.route('/api/pdf/info', methods=['POST'])
 @limiter.limit("60 per hour")
@@ -1298,6 +1211,7 @@ def pdf_info():
     except Exception as e:
         return jsonify({'error': f'Failed to read PDF: {str(e)}'}), 500
 
+
 # Error Handlers
 @app.errorhandler(413)
 def too_large(e):
@@ -1310,6 +1224,7 @@ def rate_limit_exceeded(e):
 @app.errorhandler(500)
 def internal_error(e):
     return jsonify({'error': 'Internal server error'}), 500
+
 
 # ================== INITIALIZATION ==================
 
