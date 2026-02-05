@@ -15,7 +15,7 @@ from threading import Thread
 import time
 import re
 
-from flask import Flask, request, jsonify, send_file, g
+from flask import Flask, request, jsonify, send_file, g, redirect
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -590,13 +590,9 @@ def download_file(file_id):
     db.execute('UPDATE files SET download_count = download_count + 1 WHERE id = ?', (file_id,))
     db.commit()
     
-    # If it's a Cloudinary URL, return it for redirect
+    # If it's a Cloudinary URL, redirect to it (browser will download automatically)
     if file_info.get('storage_type') == 'cloudinary':
-        return jsonify({
-            'download_url': file_path_or_url,
-            'filename': file_info['original_filename'],
-            'storage': 'cloud'
-        })
+        return redirect(file_path_or_url)
     
     # Local file - send directly
     return send_file(
@@ -732,25 +728,26 @@ def images_to_pdf():
         if len(pdf_data) < 100:
             raise Exception("Generated PDF is too small - likely corrupted")
         
-        # Save file
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
-        file_info = save_file(pdf_data, 'converted_images.pdf', user_id)
-        
-        message = 'PDF created successfully'
         if user_id:
-            message += ' (saved permanently to your account!)'
-        else:
-            message += ' (available for 24 hours - sign in to save permanently!)'
+            save_file(pdf_data, 'converted_images.pdf', user_id)
         
-        return jsonify({
-            'message': message,
-            'file': file_info
-        })
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name='converted_images.pdf'
+        )
     
     except Exception as e:
-        print(f"❌ Images to PDF error: {str(e)}")  # Log error
+        print(f"❌ Images to PDF error: {str(e)}")
         import traceback
-        traceback.print_exc()  # Full traceback
+        traceback.print_exc()
         return jsonify({'error': f'Conversion failed: {str(e)}'}), 500
         
 @app.route('/api/convert/merge-pdfs', methods=['POST'])
@@ -783,13 +780,21 @@ def merge_pdfs():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
-        file_info = save_file(pdf_data, 'merged.pdf', user_id)
+        if user_id:
+            save_file(pdf_data, 'merged.pdf', user_id)
         
-        return jsonify({
-            'message': 'PDFs merged successfully',
-            'file': file_info
-        })
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name='merged.pdf'
+        )
     
     except Exception as e:
         return jsonify({'error': f'Merge failed: {str(e)}'}), 500
@@ -811,6 +816,8 @@ def split_pdf():
         reader = PdfReader(file.stream)
         user_id = g.current_user['user_id'] if g.current_user else None
         
+        # ✅ FIXED: For split PDF, we need to return multiple files
+        # Save all files and return their info as JSON (this one stays as JSON)
         files_info = []
         for i, page in enumerate(reader.pages):
             writer = PdfWriter()
@@ -860,15 +867,24 @@ def compress_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         compressed_name = f'compressed_{original_name}'
-        file_info = save_file(pdf_data, compressed_name, user_id)
         
-        return jsonify({
-            'message': 'PDF compressed successfully',
-            'file': file_info
-        })
+        if user_id:
+            save_file(pdf_data, compressed_name, user_id)
+        
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=compressed_name
+        )
     
     except Exception as e:
         return jsonify({'error': f'Compression failed: {str(e)}'}), 500
@@ -913,15 +929,24 @@ def rotate_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         rotated_name = f'rotated_{original_name}'
-        file_info = save_file(pdf_data, rotated_name, user_id)
         
-        return jsonify({
-            'message': 'PDF rotated successfully',
-            'file': file_info
-        })
+        if user_id:
+            save_file(pdf_data, rotated_name, user_id)
+        
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=rotated_name
+        )
     
     except Exception as e:
         return jsonify({'error': f'Rotation failed: {str(e)}'}), 500
@@ -956,15 +981,24 @@ def unlock_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         unlocked_name = f'unlocked_{original_name}'
-        file_info = save_file(pdf_data, unlocked_name, user_id)
         
-        return jsonify({
-            'message': 'PDF unlocked successfully',
-            'file': file_info
-        })
+        if user_id:
+            save_file(pdf_data, unlocked_name, user_id)
+        
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=unlocked_name
+        )
     
     except Exception as e:
         return jsonify({'error': f'Unlock failed: {str(e)}'}), 500
@@ -1001,15 +1035,24 @@ def protect_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         protected_name = f'protected_{original_name}'
-        file_info = save_file(pdf_data, protected_name, user_id)
         
-        return jsonify({
-            'message': 'PDF protected successfully',
-            'file': file_info
-        })
+        if user_id:
+            save_file(pdf_data, protected_name, user_id)
+        
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=protected_name
+        )
     
     except Exception as e:
         return jsonify({'error': f'Protection failed: {str(e)}'}), 500
@@ -1068,15 +1111,24 @@ def excel_to_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         pdf_name = original_name.rsplit('.', 1)[0] + '.pdf'
-        file_info = save_file(pdf_data, pdf_name, user_id)
         
-        return jsonify({
-            'message': 'Excel converted to PDF successfully',
-            'file': file_info
-        })
+        if user_id:
+            save_file(pdf_data, pdf_name, user_id)
+        
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=pdf_name
+        )
     
     except Exception as e:
         return jsonify({'error': f'Conversion failed: {str(e)}'}), 500
@@ -1125,15 +1177,24 @@ def add_watermark():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         watermarked_name = f'watermarked_{original_name}'
-        file_info = save_file(pdf_data, watermarked_name, user_id)
         
-        return jsonify({
-            'message': 'Watermark added successfully',
-            'file': file_info
-        })
+        if user_id:
+            save_file(pdf_data, watermarked_name, user_id)
+        
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=watermarked_name
+        )
     
     except Exception as e:
         return jsonify({'error': f'Watermark failed: {str(e)}'}), 500
@@ -1184,15 +1245,24 @@ def extract_pages():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # ✅ FIXED: Save to database for logged-in users (optional)
         user_id = g.current_user['user_id'] if g.current_user else None
         original_name = sanitize_filename(file.filename)
         extracted_name = f'extracted_{original_name}'
-        file_info = save_file(pdf_data, extracted_name, user_id)
         
-        return jsonify({
-            'message': f'Extracted {len(pages_to_extract)} pages successfully',
-            'file': file_info
-        })
+        if user_id:
+            save_file(pdf_data, extracted_name, user_id)
+        
+        # ✅ FIXED: Return the PDF file directly!
+        pdf_buffer = io.BytesIO(pdf_data)
+        pdf_buffer.seek(0)
+        
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=extracted_name
+        )
     
     except Exception as e:
         return jsonify({'error': f'Extraction failed: {str(e)}'}), 500
