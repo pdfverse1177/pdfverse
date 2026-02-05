@@ -1049,10 +1049,24 @@ def rate_limit_exceeded(e):
 def internal_error(e):
     return jsonify({'error': 'Internal server error'}), 500
 
-# Initialize and Run
-if __name__ == '__main__':
-    # Create upload directory
+# ================== INITIALIZATION ==================
+# This runs when Gunicorn loads the app (not just when running directly)
+
+def init_app():
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    init_db()
+    print("✅ Database initialized!")
+
+# Initialize on module load
+init_app()
+
+# Start cleanup thread
+cleanup_thread = Thread(target=cleanup_expired_files, daemon=True)
+cleanup_thread.start()
+
+# For local development
+if __name__ == '__main__':
+    app.run(debug=False, host='0.0.0.0', port=5000)
     
     # Initialize database
     init_db()
