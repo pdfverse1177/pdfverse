@@ -1,6 +1,6 @@
 """
 PDFverse - Professional PDF Utility Platform
-Backend API with Flask, SQLite, JWT Authentication, and Security Features
+Backend API with Flask, SQLite, JWT Authentication, and Cloudinary Storage
 """
 
 import os
@@ -30,13 +30,36 @@ from reportlab.lib.pagesizes import letter, A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from openpyxl import load_workbook
+import pandas as pd
+
+# ================== CLOUDINARY SETUP ==================
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 
 # Initialize Flask App
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), '..', 'uploads')
+app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 app.config['DATABASE'] = os.path.join(os.path.dirname(__file__), 'pdfverse.db')
+
+# Initialize Cloudinary
+cloudinary.config(
+    cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME'),
+    api_key=os.environ.get('CLOUDINARY_API_KEY'),
+    api_secret=os.environ.get('CLOUDINARY_API_SECRET'),
+    secure=True
+)
+
+# Check if Cloudinary is configured
+CLOUDINARY_ENABLED = all([
+    os.environ.get('CLOUDINARY_CLOUD_NAME'),
+    os.environ.get('CLOUDINARY_API_KEY'),
+    os.environ.get('CLOUDINARY_API_SECRET')
+])
+
+print(f"☁️ Cloudinary Storage: {'ENABLED' if CLOUDINARY_ENABLED else 'DISABLED (using local storage)'}")
 
 # Security Headers Middleware
 @app.after_request
@@ -45,19 +68,17 @@ def add_security_headers(response):
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['X-XSS-Protection'] = '1; mode=block'
     response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    response.headers['Content-Security-Policy'] = "default-src 'self'"
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     return response
 
-# CORS Configuration - Update YOUR_NETLIFY_DOMAIN with your actual domain
+# CORS Configuration
 ALLOWED_ORIGINS = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'http://localhost:5500',
-    'https://pdfverses.netlify.app',  # Your actual Netlify URL
+    'https://pdfverses.netlify.app',
 ]
 
-# Add FRONTEND_URL from environment if exists
 if os.environ.get('FRONTEND_URL'):
     ALLOWED_ORIGINS.append(os.environ.get('FRONTEND_URL'))
 
@@ -100,7 +121,7 @@ def close_db(exception):
         db.close()
 
 def init_db():
-    """Initialize database tables"""
+    """Initialize database tables with Cloudinary support"""
     db = sqlite3.connect(app.config['DATABASE'])
     db.executescript('''
         CREATE TABLE IF NOT EXISTS users (
@@ -118,8 +139,11 @@ def init_db():
             stored_filename TEXT NOT NULL,
             file_type TEXT NOT NULL,
             file_size INTEGER NOT NULL,
+            cloud_url TEXT,
+            cloudinary_public_id TEXT,
+            storage_type TEXT DEFAULT 'local',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            expires_at TIMESTAMP NOT NULL,
+            expires_at TIMESTAMP,
             download_count INTEGER DEFAULT 0,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
@@ -140,6 +164,7 @@ def init_db():
     ''')
     db.commit()
     db.close()
+    print("✅ Database initialized!")
 
 # JWT Token Functions
 def generate_token(user_id, email):
@@ -218,62 +243,154 @@ def validate_password(password):
 
 def sanitize_filename(filename):
     """Sanitize filename to prevent path traversal and other attacks"""
-    # Remove any path components
     filename = os.path.basename(filename)
-    # Use werkzeug's secure_filename
     filename = secure_filename(filename)
-    # Ensure filename is not empty
     if not filename:
         filename = 'unnamed_file'
     return filename
 
-# File Storage Functions
+
+# ================== CLOUDINARY STORAGE FUNCTIONS ==================
+
+def upload_to_cloudinary(file_data, filename):
+    """Upload file to Cloudinary and return URL"""
+    try:
+        file_id = str(uuid.uuid4())
+        public_id = f"pdfverse/{file_id}"
+        
+        # Determine resource type based on file extension
+        ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+        
+        if ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']:
+            resource_type = 'image'
+        else:
+            resource_type = 'raw'  # For PDFs, docs, etc.
+        
+        # Upload to Cloudinary
+        if isinstance(file_data, bytes):
+            result = cloudinary.uploader.upload(
+                file_data,
+                public_id=public_id,
+                resource_type=resource_type
+            )
+        else:
+            result = cloudinary.uploader.upload(
+                file_data,
+                public_id=public_id,
+                resource_type=resource_type
+            )
+        
+        return {
+            'success': True,
+            'url': result['secure_url'],
+            'public_id': result['public_id'],
+            'size': result.get('bytes', 0)
+        }
+    
+    except Exception as e:
+        print(f"❌ Cloudinary upload error: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def delete_from_cloudinary(public_id, resource_type='raw'):
+    """Delete file from Cloudinary"""
+    try:
+        cloudinary.uploader.destroy(public_id, resource_type=resource_type)
+        print(f"🗑️ Deleted from Cloudinary: {public_id}")
+        return True
+    except Exception as e:
+        print(f"❌ Cloudinary delete error: {e}")
+        return False
+
+
+# ================== FILE STORAGE FUNCTIONS ==================
+
 def save_file(file_data, original_filename, user_id=None):
-    """Save file securely and return file info"""
+    """Save file to Cloudinary (if enabled) or local storage"""
     file_id = str(uuid.uuid4())
     safe_filename = sanitize_filename(original_filename)
     ext = safe_filename.rsplit('.', 1)[1].lower() if '.' in safe_filename else 'bin'
     stored_filename = f"{file_id}.{ext}"
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_filename)
     
-    # Ensure upload directory exists
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    
-    # Save file
+    # Determine file size
     if isinstance(file_data, bytes):
-        with open(file_path, 'wb') as f:
-            f.write(file_data)
         file_size = len(file_data)
+        file_bytes = file_data
     else:
-        file_data.save(file_path)
-        file_size = os.path.getsize(file_path)
+        file_data.seek(0, 2)  # Seek to end
+        file_size = file_data.tell()
+        file_data.seek(0)  # Seek back to start
+        file_bytes = file_data.read()
+        file_data.seek(0)
     
-    # Calculate expiry (24 hours from now)
-    expires_at = datetime.utcnow() + timedelta(hours=24)
+    # Calculate expiry
+    # Logged in users: files never expire (permanent storage!)
+    # Guests: files expire in 24 hours
+    if user_id:
+        expires_at = None  # ⭐ PERMANENT for logged-in users!
+    else:
+        expires_at = datetime.utcnow() + timedelta(hours=24)
+    
+    cloud_url = None
+    cloudinary_public_id = None
+    storage_type = 'local'
+    
+    # Try Cloudinary first if enabled
+    if CLOUDINARY_ENABLED:
+        upload_result = upload_to_cloudinary(file_bytes, safe_filename)
+        
+        if upload_result['success']:
+            cloud_url = upload_result['url']
+            cloudinary_public_id = upload_result['public_id']
+            storage_type = 'cloudinary'
+            file_size = upload_result.get('size', file_size)
+            print(f"✅ Uploaded to Cloudinary: {safe_filename}")
+        else:
+            print(f"⚠️ Cloudinary failed, using local storage")
+    
+    # Fallback to local storage if Cloudinary not available
+    if storage_type == 'local':
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_filename)
+        
+        with open(file_path, 'wb') as f:
+            f.write(file_bytes)
+        print(f"💾 Saved locally: {safe_filename}")
     
     # Save to database
     db = get_db()
     db.execute('''
         INSERT INTO files (id, user_id, original_filename, stored_filename, 
-                          file_type, file_size, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (file_id, user_id, safe_filename, stored_filename, ext, file_size, expires_at))
+                          file_type, file_size, cloud_url, cloudinary_public_id,
+                          storage_type, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (file_id, user_id, safe_filename, stored_filename, ext, file_size,
+          cloud_url, cloudinary_public_id, storage_type, expires_at))
     db.commit()
     
     return {
         'file_id': file_id,
         'filename': safe_filename,
         'size': file_size,
-        'expires_at': expires_at.isoformat()
+        'url': cloud_url,
+        'storage': storage_type,
+        'expires_at': expires_at.isoformat() if expires_at else None,
+        'permanent': user_id is not None
     }
 
+
 def get_file_path(file_id, user_id=None):
-    """Get file path securely"""
+    """Get file path or cloud URL"""
     db = get_db()
     
+    # For guests, allow access to any non-expired file
+    # For logged-in users, only their own files
     if user_id:
         file_info = db.execute(
-            'SELECT * FROM files WHERE id = ? AND user_id = ?',
+            'SELECT * FROM files WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
             (file_id, user_id)
         ).fetchone()
     else:
@@ -285,48 +402,80 @@ def get_file_path(file_id, user_id=None):
     if not file_info:
         return None, None
     
-    file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_info['stored_filename'])
+    # Check if expired (only for files with expiry)
+    if file_info['expires_at']:
+        try:
+            expires_at = datetime.fromisoformat(file_info['expires_at'])
+            if expires_at < datetime.utcnow():
+                return None, None
+        except:
+            pass
     
-    if not os.path.exists(file_path):
+    # Return cloud URL or local path
+    if file_info['storage_type'] == 'cloudinary' and file_info['cloud_url']:
+        return file_info['cloud_url'], dict(file_info)
+    else:
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_info['stored_filename'])
+        if os.path.exists(file_path):
+            return file_path, dict(file_info)
         return None, None
-    
-    return file_path, file_info
+
 
 # Background Cleanup Task
 def cleanup_expired_files():
-    """Remove expired files from disk and database"""
+    """Remove expired files from storage and database"""
     while True:
         try:
             db = sqlite3.connect(app.config['DATABASE'])
             cursor = db.execute(
-                'SELECT id, stored_filename FROM files WHERE expires_at < ?',
-                (datetime.utcnow(),)
+                '''SELECT id, stored_filename, cloudinary_public_id, storage_type, file_type
+                   FROM files WHERE expires_at IS NOT NULL AND expires_at < ?''',
+                (datetime.utcnow().isoformat(),)
             )
             expired_files = cursor.fetchall()
             
-            for file_id, stored_filename in expired_files:
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_filename)
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                except Exception as e:
-                    print(f"Error deleting file {file_path}: {e}")
+            for row in expired_files:
+                file_id, stored_filename, cloudinary_public_id, storage_type, file_type = row
+                
+                # Delete from Cloudinary if applicable
+                if storage_type == 'cloudinary' and cloudinary_public_id:
+                    resource_type = 'image' if file_type in ['jpg', 'jpeg', 'png', 'gif', 'webp'] else 'raw'
+                    delete_from_cloudinary(cloudinary_public_id, resource_type)
+                else:
+                    # Delete local file
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], stored_filename)
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                    except Exception as e:
+                        print(f"Error deleting local file: {e}")
             
-            db.execute('DELETE FROM files WHERE expires_at < ?', (datetime.utcnow(),))
+            # Remove from database
+            db.execute('DELETE FROM files WHERE expires_at IS NOT NULL AND expires_at < ?', 
+                      (datetime.utcnow().isoformat(),))
             db.commit()
             db.close()
+            
+            if expired_files:
+                print(f"🗑️ Cleaned up {len(expired_files)} expired files")
+                
         except Exception as e:
             print(f"Cleanup error: {e}")
         
         # Run every 5 minutes
         time.sleep(300)
 
+
 # ================== API ROUTES ==================
 
 # Health Check
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()})
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.utcnow().isoformat(),
+        'cloudinary': 'enabled' if CLOUDINARY_ENABLED else 'disabled'
+    })
 
 # ================== AUTH ROUTES ==================
 
@@ -351,12 +500,10 @@ def register():
     
     db = get_db()
     
-    # Check if user exists
     existing = db.execute('SELECT id FROM users WHERE email = ?', (email,)).fetchone()
     if existing:
         return jsonify({'error': 'Email already registered'}), 409
     
-    # Create user
     password_hash = generate_password_hash(password)
     cursor = db.execute(
         'INSERT INTO users (email, password_hash) VALUES (?, ?)',
@@ -368,7 +515,7 @@ def register():
     token = generate_token(user_id, email)
     
     return jsonify({
-        'message': 'Registration successful',
+        'message': 'Registration successful! Your files will now be saved permanently.',
         'token': token,
         'user': {'id': user_id, 'email': email}
     }), 201
@@ -416,15 +563,16 @@ def list_user_files():
     """List all files for current user"""
     db = get_db()
     files = db.execute('''
-        SELECT id, original_filename, file_type, file_size, created_at, 
-               expires_at, download_count
+        SELECT id, original_filename, file_type, file_size, cloud_url,
+               storage_type, created_at, expires_at, download_count
         FROM files 
-        WHERE user_id = ? AND expires_at > ?
+        WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?)
         ORDER BY created_at DESC
-    ''', (g.current_user['user_id'], datetime.utcnow())).fetchall()
+    ''', (g.current_user['user_id'], datetime.utcnow().isoformat())).fetchall()
     
     return jsonify({
-        'files': [dict(f) for f in files]
+        'files': [dict(f) for f in files],
+        'total': len(files)
     })
 
 @app.route('/api/files/<file_id>', methods=['GET'])
@@ -432,9 +580,9 @@ def list_user_files():
 def download_file(file_id):
     """Download a file"""
     user_id = g.current_user['user_id'] if g.current_user else None
-    file_path, file_info = get_file_path(file_id, user_id)
+    file_path_or_url, file_info = get_file_path(file_id, user_id)
     
-    if not file_path:
+    if not file_path_or_url:
         return jsonify({'error': 'File not found or expired'}), 404
     
     # Update download count
@@ -442,8 +590,17 @@ def download_file(file_id):
     db.execute('UPDATE files SET download_count = download_count + 1 WHERE id = ?', (file_id,))
     db.commit()
     
+    # If it's a Cloudinary URL, return it for redirect
+    if file_info.get('storage_type') == 'cloudinary':
+        return jsonify({
+            'download_url': file_path_or_url,
+            'filename': file_info['original_filename'],
+            'storage': 'cloud'
+        })
+    
+    # Local file - send directly
     return send_file(
-        file_path,
+        file_path_or_url,
         as_attachment=True,
         download_name=file_info['original_filename']
     )
@@ -452,17 +609,29 @@ def download_file(file_id):
 @token_required
 def delete_file(file_id):
     """Delete a file"""
-    file_path, file_info = get_file_path(file_id, g.current_user['user_id'])
+    db = get_db()
     
-    if not file_path:
+    file_info = db.execute(
+        'SELECT * FROM files WHERE id = ? AND user_id = ?',
+        (file_id, g.current_user['user_id'])
+    ).fetchone()
+    
+    if not file_info:
         return jsonify({'error': 'File not found'}), 404
     
-    try:
-        os.remove(file_path)
-    except:
-        pass
+    # Delete from Cloudinary if applicable
+    if file_info['storage_type'] == 'cloudinary' and file_info['cloudinary_public_id']:
+        resource_type = 'image' if file_info['file_type'] in ['jpg', 'jpeg', 'png', 'gif', 'webp'] else 'raw'
+        delete_from_cloudinary(file_info['cloudinary_public_id'], resource_type)
+    else:
+        # Delete local file
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], file_info['stored_filename'])
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except:
+            pass
     
-    db = get_db()
     db.execute('DELETE FROM files WHERE id = ?', (file_id,))
     db.commit()
     
@@ -483,13 +652,11 @@ def images_to_pdf():
     if not files or len(files) == 0:
         return jsonify({'error': 'No files selected'}), 400
     
-    # Validate all files
     for file in files:
         if not allowed_file(file.filename, 'image'):
             return jsonify({'error': f'Invalid file type: {file.filename}'}), 400
     
     try:
-        # Create PDF
         images = []
         for file in files:
             img = Image.open(file.stream)
@@ -497,7 +664,6 @@ def images_to_pdf():
                 img = img.convert('RGB')
             images.append(img)
         
-        # Save to PDF
         pdf_buffer = io.BytesIO()
         if len(images) == 1:
             images[0].save(pdf_buffer, 'PDF', resolution=100.0)
@@ -508,46 +674,22 @@ def images_to_pdf():
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
-        # Save file
         user_id = g.current_user['user_id'] if g.current_user else None
         file_info = save_file(pdf_data, 'converted_images.pdf', user_id)
         
+        message = 'PDF created successfully'
+        if user_id:
+            message += ' (saved permanently to your account!)'
+        else:
+            message += ' (available for 24 hours - sign in to save permanently!)'
+        
         return jsonify({
-            'message': 'PDF created successfully',
+            'message': message,
             'file': file_info
         })
     
     except Exception as e:
         return jsonify({'error': f'Conversion failed: {str(e)}'}), 500
-
-@app.route('/api/convert/pdf-to-images', methods=['POST'])
-@limiter.limit("30 per hour")
-@optional_auth
-def pdf_to_images():
-    """Convert PDF pages to images"""
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
-    
-    file = request.files['file']
-    
-    if not allowed_file(file.filename, 'pdf'):
-        return jsonify({'error': 'Invalid file type'}), 400
-    
-    try:
-        # This is a simplified version - for full PDF to image conversion,
-        # you'd need pdf2image library with poppler
-        # For now, we'll return the PDF info
-        reader = PdfReader(file.stream)
-        num_pages = len(reader.pages)
-        
-        return jsonify({
-            'message': 'PDF analyzed',
-            'pages': num_pages,
-            'note': 'Full PDF to image conversion requires additional system dependencies'
-        })
-    
-    except Exception as e:
-        return jsonify({'error': f'Processing failed: {str(e)}'}), 500
 
 @app.route('/api/convert/merge-pdfs', methods=['POST'])
 @limiter.limit("30 per hour")
@@ -649,7 +791,6 @@ def compress_pdf():
             page.compress_content_streams()
             writer.add_page(page)
         
-        # Remove unused objects
         writer.add_metadata(reader.metadata or {})
         
         pdf_buffer = io.BytesIO()
@@ -680,7 +821,7 @@ def rotate_pdf():
     
     file = request.files['file']
     angle = request.form.get('angle', 90, type=int)
-    pages = request.form.get('pages', 'all')  # 'all' or comma-separated page numbers
+    pages = request.form.get('pages', 'all')
     
     if not allowed_file(file.filename, 'pdf'):
         return jsonify({'error': 'Invalid file type'}), 400
@@ -692,7 +833,6 @@ def rotate_pdf():
         reader = PdfReader(file.stream)
         writer = PdfWriter()
         
-        # Parse pages to rotate
         if pages == 'all':
             pages_to_rotate = set(range(len(reader.pages)))
         else:
@@ -792,7 +932,6 @@ def protect_pdf():
         for page in reader.pages:
             writer.add_page(page)
         
-        # Encrypt with password
         writer.encrypt(user_password, owner_password or user_password)
         
         pdf_buffer = io.BytesIO()
@@ -827,39 +966,33 @@ def excel_to_pdf():
         return jsonify({'error': 'Invalid file type'}), 400
     
     try:
-        # Read Excel file
         if file.filename.endswith('.csv'):
             df = pd.read_csv(file.stream)
         else:
             df = pd.read_excel(file.stream)
         
-        # Create PDF with reportlab
         pdf_buffer = io.BytesIO()
         c = canvas.Canvas(pdf_buffer, pagesize=A4)
         width, height = A4
         
-        # Title
         c.setFont("Helvetica-Bold", 16)
         c.drawString(50, height - 50, "Excel Data Export")
         
-        # Draw table
         c.setFont("Helvetica", 10)
         y = height - 100
         x = 50
         
-        # Headers
         cols = list(df.columns)
         col_width = (width - 100) / min(len(cols), 5)
         
         c.setFont("Helvetica-Bold", 9)
-        for i, col in enumerate(cols[:5]):  # Limit to 5 columns for readability
+        for i, col in enumerate(cols[:5]):
             c.drawString(x + i * col_width, y, str(col)[:15])
         
         y -= 20
         c.setFont("Helvetica", 8)
         
-        # Data rows
-        for _, row in df.head(50).iterrows():  # Limit to 50 rows per page
+        for _, row in df.head(50).iterrows():
             if y < 50:
                 c.showPage()
                 y = height - 50
@@ -901,7 +1034,6 @@ def add_watermark():
         return jsonify({'error': 'Invalid file type'}), 400
     
     try:
-        # Create watermark PDF
         watermark_buffer = io.BytesIO()
         c = canvas.Canvas(watermark_buffer, pagesize=A4)
         width, height = A4
@@ -919,7 +1051,6 @@ def add_watermark():
         watermark_reader = PdfReader(watermark_buffer)
         watermark_page = watermark_reader.pages[0]
         
-        # Apply watermark to all pages
         reader = PdfReader(file.stream)
         writer = PdfWriter()
         
@@ -954,7 +1085,7 @@ def extract_pages():
         return jsonify({'error': 'No file uploaded'}), 400
     
     file = request.files['file']
-    pages_str = request.form.get('pages', '')  # Format: "1,3,5-7,9"
+    pages_str = request.form.get('pages', '')
     
     if not allowed_file(file.filename, 'pdf'):
         return jsonify({'error': 'Invalid file type'}), 400
@@ -966,7 +1097,6 @@ def extract_pages():
         reader = PdfReader(file.stream)
         total_pages = len(reader.pages)
         
-        # Parse page ranges
         pages_to_extract = set()
         for part in pages_str.split(','):
             part = part.strip()
@@ -1050,14 +1180,13 @@ def internal_error(e):
     return jsonify({'error': 'Internal server error'}), 500
 
 # ================== INITIALIZATION ==================
-# This runs when Gunicorn loads the app (not just when running directly)
 
 def init_app():
+    """Initialize the application"""
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     init_db()
-    print("✅ Database initialized!")
 
-# Initialize on module load
+# Initialize on module load (works with Gunicorn)
 init_app()
 
 # Start cleanup thread
@@ -1066,14 +1195,4 @@ cleanup_thread.start()
 
 # For local development
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000)
-    
-    # Initialize database
-    init_db()
-    
-    # Start cleanup thread
-    cleanup_thread = Thread(target=cleanup_expired_files, daemon=True)
-    cleanup_thread.start()
-    
-    # Run app
     app.run(debug=False, host='0.0.0.0', port=5000)
