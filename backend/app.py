@@ -657,23 +657,82 @@ def images_to_pdf():
             return jsonify({'error': f'Invalid file type: {file.filename}'}), 400
     
     try:
-        images = []
-        for file in files:
-            img = Image.open(file.stream)
-            if img.mode == 'RGBA':
-                img = img.convert('RGB')
-            images.append(img)
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.utils import ImageReader
         
         pdf_buffer = io.BytesIO()
-        if len(images) == 1:
-            images[0].save(pdf_buffer, 'PDF', resolution=100.0)
-        else:
-            images[0].save(pdf_buffer, 'PDF', resolution=100.0, 
-                          save_all=True, append_images=images[1:])
+        c = canvas.Canvas(pdf_buffer, pagesize=A4)
+        width, height = A4
         
+        for file in files:
+            # Reset file pointer
+            file.stream.seek(0)
+            
+            # Open image
+            img = Image.open(file.stream)
+            
+            # Convert RGBA/palette to RGB
+            if img.mode in ('RGBA', 'LA', 'P'):
+                # Create white background
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                if img.mode in ('RGBA', 'LA'):
+                    background.paste(img, mask=img.split()[-1])
+                else:
+                    background.paste(img)
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Save to buffer for reportlab
+            img_buffer = io.BytesIO()
+            img.save(img_buffer, format='JPEG', quality=95)
+            img_buffer.seek(0)
+            
+            # Calculate dimensions to fit page
+            img_width, img_height = img.size
+            aspect_ratio = img_height / float(img_width)
+            
+            # Calculate display size (with margins)
+            margin = 40
+            max_width = width - (2 * margin)
+            max_height = height - (2 * margin)
+            
+            if aspect_ratio > (max_height / max_width):
+                # Height is limiting
+                display_height = max_height
+                display_width = display_height / aspect_ratio
+            else:
+                # Width is limiting
+                display_width = max_width
+                display_height = display_width * aspect_ratio
+            
+            # Center on page
+            x = (width - display_width) / 2
+            y = (height - display_height) / 2
+            
+            # Draw image
+            c.drawImage(ImageReader(img_buffer), 
+                       x, y, 
+                       width=display_width, 
+                       height=display_height,
+                       preserveAspectRatio=True)
+            
+            # New page for next image
+            c.showPage()
+        
+        # Finalize PDF
+        c.save()
         pdf_buffer.seek(0)
         pdf_data = pdf_buffer.read()
         
+        # Validate PDF was created properly
+        if len(pdf_data) < 100:
+            raise Exception("Generated PDF is too small - likely corrupted")
+        
+        # Save file
         user_id = g.current_user['user_id'] if g.current_user else None
         file_info = save_file(pdf_data, 'converted_images.pdf', user_id)
         
@@ -689,8 +748,11 @@ def images_to_pdf():
         })
     
     except Exception as e:
+        print(f"❌ Images to PDF error: {str(e)}")  # Log error
+        import traceback
+        traceback.print_exc()  # Full traceback
         return jsonify({'error': f'Conversion failed: {str(e)}'}), 500
-
+        
 @app.route('/api/convert/merge-pdfs', methods=['POST'])
 @limiter.limit("30 per hour")
 @optional_auth
